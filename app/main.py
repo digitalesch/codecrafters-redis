@@ -95,6 +95,9 @@ def encode_simple_string(text: str) -> bytes:
 def encode_bulk_string(text: str) -> bytes:
     return f"${len(text)}\r\n{text}\r\n".encode('utf-8')
 
+def encode_simple_error(text: str) -> bytes:
+    return f"-{text}\r\n".encode('utf-8')
+
 # def set_command(args: list[str], **kwargs) -> bytes:
 def set_command(**kwargs) -> bytes:
     # simple set command, for key -> value to get inputed into dict
@@ -110,7 +113,9 @@ def set_command(**kwargs) -> bytes:
     raise ValueError(f"Incompatible parameters. Tried {kwargs}, but needed SET <key> <value> <PX>? <seconds>?")
 
 def get_command(args: list[str]) -> dict:
+    print(f"[GET]: {args}")
     read_value = thread_safe_read(shared_dict, thread_lock, args[0])
+    print(read_value)
     if len(read_value) == 0:
         return {"type": "none", "value": b"$-1\r\n"}
     if type(read_value) == str:
@@ -222,9 +227,17 @@ def type_command(args: list[str]):
 
 def xadd_command(key: str, entry_id: str, values: list[str], **kwargs):
     temp_dict = {
-        # "created_at": datetime.now(), 
         entry_id: {values[i]: values[i+1] for i in range(0,len(values),2)}
     }
+
+    if read_value := thread_safe_read(shared_dict, thread_lock, key):
+        latest_entry_id = next(iter(read_value[0]))
+        source_timestamp, source_sequence_num = latest_entry_id.split('-')
+        target_timestamp, target_sequence_num = entry_id.split('-')
+        if all([target_timestamp == "0",target_sequence_num == "0"]):
+            return encode_simple_error("ERR The ID specified in XADD must be greater than 0-0")
+        if source_timestamp > target_timestamp or source_sequence_num >= target_sequence_num:
+            return encode_simple_error("ERR The ID specified in XADD is equal or smaller than the target stream top item")
 
     rpush_command(['RPUSH',key,temp_dict])
     
@@ -308,6 +321,7 @@ def client_thread(connection: socket.socket, address):
             parsed_buffer = parse_resp_strings(buffer)
             print(f"[RECV]: {parsed_buffer}")
             resp = handle_command(parsed_buffer, address)
+            print(f"[SEND]: {resp}")
             connection.sendall(resp)
             buffer = b""  # Reset buffer after processing
     finally:
